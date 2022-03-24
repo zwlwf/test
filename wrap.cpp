@@ -4,6 +4,9 @@
 #include <map>
 #include <string>
 #include <fstream>
+#include <elfio/elfio_dump.hpp>
+
+using namespace ELFIO;
 
 static std::map<std::string,uint64_t> loadFiles;
 
@@ -20,45 +23,58 @@ struct mapInfo {
 		return 0;
 	};
 
-	mapInfo(const char* line) {
+	mapInfo(const std::string&line) {
 		// parse_hex
 		int i =0;
 		startAddr = 0;
-		while(line[i] && line[i]!='-') {
+		int n = line.size();
+		while(i<n && line[i]!='-') {
 			char c = line[i];
 			startAddr = (startAddr<<4) + hexCharValue(c);
 			i++;
 		}
 		
 		for(int i=0; i<4; i++) {
-			while(line[i] && line[i]!=' ') i++;
-			while(line[i] && line[i]==' ') i++;
+			while(i<n && line[i]!=' ') i++;
+			while(i<n && line[i]==' ') i++;
 		}
 		// parse size
 		size = 0;
-		while(line[i] && line[i]!=' ') {
+		while(i<n && line[i]!=' ') {
 			size = size*10 + hexCharValue(line[i]);
 			i++;
 		}
-		if(size==0) return;
-		while(line[i] && line[i]==' ') i++;
-		while(line[i] && line[i]!=' ' && line[i]!='\n') binPath += line[i++];
+
+		while(i<n && line[i]==' ') i++;
+		while(i<n && line[i]!=' ' && line[i]!='\n') binPath += line[i++];
 	}
 };
 
 void parse_maps() {
 	const char* fname = "/proc/self/maps";
 	FILE* fp = fopen(fname, "r");
-	char* line = new char[MAXLINE]; 
+	std::ifstream is(fname);
+	std::string line;
 	bool isFirst = true; // treat the first line as exe
-	while( (line = fgets(line, MAXLINE, fp)) != NULL ) {
+	while( std::getline(is,line) ) {
 		mapInfo tmp(line);
-		if(tmp.size == 0 || loadFiles.find(tmp.binPath) != loadFiles.end()) continue;
+		if(tmp.size == 0 ||
+		   tmp.binPath.empty() ||
+		   tmp.binPath[0] == '[' || // name like [stack]
+		   loadFiles.find(tmp.binPath) != loadFiles.end() ) continue;
 		if( isFirst ) loadFiles[tmp.binPath] = 0;
 		else loadFiles[tmp.binPath] = tmp.startAddr;
 		isFirst = false;
 	}
-	delete line;
+	is.close();
+}
+
+void readFunctionInfo( std::string binPath ) {
+	elfio reader;
+	if( !reader.load(binPath.c_str()) ) {
+		printf("File %s is not found or not a ELF");
+		return;
+	}
 }
 
 int main() {
