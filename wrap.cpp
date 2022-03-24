@@ -9,19 +9,19 @@
 using namespace ELFIO;
 
 static std::map<std::string,uint64_t> loadFiles;
+static std::map<uint64_t, std::string> site2Functions;
 
-static const unsigned int MAXLINE = 2048;
+int hexCharValue(const char c) {
+	if(c >='a' && c<='f') return c-'a'+10;
+	if(c >= 'A' && c<='F') return c-'A'+10;
+	if(c>='0' && c<='9') return c-'0';
+	return 0;
+}
 
 struct mapInfo {
 	uint64_t startAddr;
 	uint64_t size;
 	std::string binPath;
-	auto hexCharValue = [](char c) {
-		if(c >='a' && c<='f') return c-'a'+10;
-		if(c >= 'A' && c<='F') return c-'A'+10;
-		if(c>='0' && c<='9') return c-'0';
-		return 0;
-	};
 
 	mapInfo(const std::string&line) {
 		// parse_hex
@@ -34,7 +34,7 @@ struct mapInfo {
 			i++;
 		}
 		
-		for(int i=0; i<4; i++) {
+		for(int j=0; j<4; j++) {
 			while(i<n && line[i]!=' ') i++;
 			while(i<n && line[i]==' ') i++;
 		}
@@ -69,18 +69,65 @@ void parse_maps() {
 	is.close();
 }
 
-void readFunctionInfo( std::string binPath ) {
+void readFunctionInfo( std::string binPath, uint64_t offset ) {
 	elfio reader;
 	if( !reader.load(binPath.c_str()) ) {
 		printf("File %s is not found or not a ELF");
 		return;
 	}
+	Elf_Half n = reader.sections.size();
+	for(int i=0; i<n; i++) {
+		section* sec = reader.sections[i];
+		if( sec->get_type() == SHT_SYMTAB ) {
+			symbol_section_accessor symbols( reader, sec );
+			Elf_Xword sym_n = symbols.get_symbols_num();
+			for(int j=0; j<sym_n; j++) {
+				std::string name;
+				Elf64_Addr value=0;
+				Elf_Xword size=0;
+				unsigned char bind = 0;
+				unsigned char type = 0;
+				Elf_Half shndx = 0;
+				unsigned char other =0 ;
+				symbols.get_symbol(j, name, value, size, bind, type, shndx, other);
+				if( type == STT_FUNC ) {
+					site2Functions[value + offset] = name;
+				}
+			}
+			return;
+		}
+	}
 }
 
-int main() {
-	parse_maps();
-	for(auto &x : loadFiles) {
-		printf("%s : %x\n", x.first.c_str(), x.second);
+extern void func_enter(const std::string& fname, uint64_t callsite);
+extern void func_exit(const std::string& fname, uint64_t callsite);
+
+extern "C" void __cyg_profile_func_enter(void* this_fn, void* call_site) {
+	if( site2Functions.empty() ) {
+		parse_maps();
+		for(auto &x : loadFiles) {
+			readFunctionInfo( x.first, x.second);
+		}
 	}
-	return 0;
+	uint64_t addr = (uint64_t) this_fn;
+	if( site2Functions.find(addr) != site2Functions.end() ) {
+		func_enter( site2Functions[addr], (uint64_t) call_site);
+	} else {
+		fprintf(stderr, "Function [unknown] is called from %x\n", call_site);
+	}
+}
+
+extern "C" void __cyg_profile_func_exit(void* this_fn, void* call_site) {
+	if( site2Functions.empty() ) {
+		parse_maps();
+		for(auto &x : loadFiles) {
+			readFunctionInfo( x.first, x.second);
+		}
+	}
+	uint64_t addr = (uint64_t) this_fn;
+	if( site2Functions.find(addr) != site2Functions.end() ) {
+		func_exit( site2Functions[addr], (uint64_t) call_site);
+	} else {
+		fprintf(stderr, "Function [unknown] is called from %x\n", call_site);
+	}
 }
